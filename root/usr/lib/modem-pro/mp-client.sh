@@ -45,7 +45,11 @@ gen_script() {
 
 	# 匹配行尾的 proto_init_update "*" 0 / "*" 1，紧跟其后插入 proto_set_keep 1
 	sed '/proto_init_update "\*" [01][[:space:]]*$/a proto_set_keep 1' "$src" > "$out" 2>/dev/null
-	[ -s "$out" ] || { rm -f "$out"; return 1; }
+	if [ ! -s "$out" ] || ! grep -q 'proto_set_keep 1' "$out" 2>/dev/null; then
+		logger -t modem-pro "mp-client: 无法向 $src 注入 proto_set_keep 1"
+		rm -f "$out"
+		return 1
+	fi
 	chmod 0755 "$out"
 	return 0
 }
@@ -88,13 +92,30 @@ start_udhcpc() {
 	logger -t modem-pro "mp-client: udhcpc 已拉起 (pid $UDHCPC_PID)"
 }
 
-# -P0 = 请求前缀委派（hint 0），与官方 dhcpv6.sh 的默认一致；
-# 顺便也让 RFC 7278 的 extendprefix 流程走起来。
+# -P 参数由 modem_pro.sh 按 reqprefix 决定（auto 默认 -P0，no 不传 -P）。
 start_odhcp6c() {
 	# shellcheck disable=SC2086
-	odhcp6c -s "$V6_SCRIPT" ${MP_OOPTS:-} -P0 "$IFACE" &
+	odhcp6c -s "$V6_SCRIPT" ${MP_OOPTS:-} "$IFACE" &
 	ODHCP6C_PID=$!
 	logger -t modem-pro "mp-client: odhcp6c 已拉起 (pid $ODHCP6C_PID)"
+}
+
+# 检查子进程是否真在运行：子进程退出但尚未 wait 时会处于 Z（僵尸）状态，
+# 此时 kill -0 仍返回 0；检测到僵尸或已消失时顺便 wait 回收，避免漏检。
+proc_alive() {
+	local pid="$1" stat_line state
+	[ -n "$pid" ] || return 1
+	kill -0 "$pid" 2>/dev/null || { wait "$pid" 2>/dev/null; return 1; }
+	if [ -r "/proc/$pid/stat" ]; then
+		stat_line="$(cat "/proc/$pid/stat" 2>/dev/null)"
+		state="${stat_line##*) }"
+		state="${state%% *}"
+		if [ "$state" = "Z" ]; then
+			wait "$pid" 2>/dev/null
+			return 1
+		fi
+	fi
+	return 0
 }
 
 cleanup() {
@@ -132,7 +153,7 @@ while [ "$STOPPING" = "0" ]; do
 	sleep "$POLL"
 	[ "$STOPPING" = "1" ] && break
 
-	if kill -0 "$UDHCPC_PID" 2>/dev/null; then
+	if proc_alive "$UDHCPC_PID"; then
 		UFAIL=0
 	else
 		UFAIL=$((UFAIL + 1))
@@ -144,7 +165,7 @@ while [ "$STOPPING" = "0" ]; do
 		start_udhcpc
 	fi
 
-	if kill -0 "$ODHCP6C_PID" 2>/dev/null; then
+	if proc_alive "$ODHCP6C_PID"; then
 		OFAIL=0
 	else
 		OFAIL=$((OFAIL + 1))

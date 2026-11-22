@@ -101,7 +101,8 @@ proto_modem_pro_setup() {
 	local oopts=""
 	[ -n "$reqaddress" ] && [ "$reqaddress" != "auto" ] && append oopts "-N$reqaddress"
 	case "$reqprefix" in
-		""|auto|no) ;;
+		""|auto) append oopts "-P0" ;;
+		no) ;;
 		*) append oopts "-P$reqprefix" ;;
 	esac
 	[ -n "$ip6ifaceid" ] && append oopts "-i$ip6ifaceid"
